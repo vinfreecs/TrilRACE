@@ -68,6 +68,8 @@ namespace FROSch {
             AddingLayersStrategy_ = LayersFromMatrix;
         } else if (!this->ParameterList_->get("Adding Layers Strategy","CrsGraph").compare("Old")) {
             AddingLayersStrategy_ = LayersOld;
+        } else if (!this->ParameterList_->get("Adding Layers Strategy","CrsGraph").compare("Threaded")) {
+            AddingLayersStrategy_ = LayersThreaded;
         } else {
             FROSCH_ASSERT(false,"FROSch::AlgebraicOverlappingOperator: Specify a valid strategy for adding layers.");
         }
@@ -325,6 +327,15 @@ namespace FROSch {
 
         // Adding Layers of Elements to the overlapping subdomains
         ConstXCrsGraphPtr overlappingGraph = this->OverlappingMatrix_->getCrsGraph();
+        // VR 2026.10.29: "Threaded" builds all layers in one call (FROSch_Tools: ExtendOverlapByLayers_Threaded); the loop
+        // below then only prints the statistics (layer sizes) and writes the dumps (layer maps, kept only when dumping)
+        Array<LO> threadedLayerSizes;
+        Array<ConstXMapPtr> threadedLayerMaps;
+        ConstXMapPtr threadedFinalMap;
+        if (AddingLayersStrategy_==LayersThreaded && overlap>0) {
+            threadedFinalMap = ExtendOverlapByLayers_Threaded(this->K_->getCrsGraph(),this->OverlappingMap_,overlap,threadedLayerSizes,
+                                                              DumpDir_.empty() ? nullptr : &threadedLayerMaps);
+        }
         for (int i=0; i<overlap; i++) {
             switch (AddingLayersStrategy_) {
                 case LayersFromGraph:
@@ -339,6 +350,12 @@ namespace FROSch {
                     ExtendOverlapByOneLayer_Old(this->OverlappingMatrix_,this->OverlappingMap_,this->OverlappingMatrix_,this->OverlappingMap_);
                     break;
 
+                case LayersThreaded:
+                    // VR 2026.10.29: built above; the map of each layer exists only when dumping
+                    if (!DumpDir_.empty()) this->OverlappingMap_ = threadedLayerMaps[i];
+                    if (i==overlap-1) this->OverlappingMap_ = threadedFinalMap;
+                    break;
+
                 default:
                     FROSCH_ASSERT(false,"FROSch::AlgebraicOverlappingOperator: Specify a valid strategy for adding layers.");
             }
@@ -346,7 +363,10 @@ namespace FROSch {
             if (!DumpDir_.empty()) dumpMapGIDs(this->OverlappingMap_,"map_layer"+to_string(i+1));
             if (verbosity==All) {
                 FROSCH_DETAILTIMER_START_LEVELID(printStatisticsTime,"print statistics");
-                local = (LO) max((LO) this->OverlappingMap_->getLocalNumElements(),(LO) 0);
+                // VR 2026.10.29: "Threaded" keeps only the size of each layer (its map only when dumping)
+                local = (AddingLayersStrategy_==LayersThreaded) ? threadedLayerSizes[i]
+                                                                : (LO) this->OverlappingMap_->getLocalNumElements();
+                local = max(local,(LO) 0);
                 reduceAll(*this->MpiComm_,REDUCE_SUM,GO(local),ptr(&sum));
                 avg = max(sum/double(this->MpiComm_->getSize()),0.0);
                 reduceAll(*this->MpiComm_,REDUCE_MIN,local,ptr(&minVal));
@@ -389,6 +409,11 @@ namespace FROSch {
 
                 case LayersOld:
                     if (this->Verbose_) cout << "FROSch::AlgebraicOverlappingOperator : The overlapping map is already sorted" << endl;
+                    break;
+
+                case LayersThreaded:
+                    // VR 2026.10.29: already sorted; the same call as CrsGraph, so the final map is built the same way
+                    this->OverlappingMap_ = SortMapByGlobalIndex(this->OverlappingMap_);
                     break;
 
                 default:

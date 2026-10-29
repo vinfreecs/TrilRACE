@@ -248,6 +248,18 @@ namespace FROSch {
                                 RCP<const CrsGraph<LO,GO,NO> > &outputGraph,
                                 RCP<const Map<LO,GO,NO> > &outputMap);
 
+    // VR 2026.10.29: "Adding Layers Strategy" = "Threaded". All k layers in one call, same set per layer as
+    // ExtendOverlapByOneLayer (all column GIDs of the rows in the set), but every row is fetched from K's owner
+    // once and kept, and the next set is marked in a bitset over the global index range by all threads of the
+    // rank (no copy of the local rows, no fillComplete per layer). Returns the final map, sorted by GID.
+    // layerSizes: local rows after each layer (statistics table); layerMaps: every layer's map, only if non-null (dumps).
+    template <class LO,class GO,class NO>
+    RCP<const Map<LO,GO,NO> > ExtendOverlapByLayers_Threaded(RCP<const CrsGraph<LO,GO,NO> > graph,
+                                                             RCP<const Map<LO,GO,NO> > startMap,
+                                                             int overlap,
+                                                             Array<LO> &layerSizes,
+                                                             Array<RCP<const Map<LO,GO,NO> > > *layerMaps = nullptr);
+
     /*! \brief Sort the Xpetra::Map by the global IDs \c x
      * \param[in] inputMap Unsorted input map
      */

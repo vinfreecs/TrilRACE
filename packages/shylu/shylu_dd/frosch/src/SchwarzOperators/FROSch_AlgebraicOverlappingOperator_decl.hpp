@@ -51,7 +51,8 @@ namespace FROSch {
     using namespace Teuchos;
     using namespace Xpetra;
 
-    enum AddingLayersStrategy {LayersFromMatrix=0,LayersFromGraph=1,LayersOld=2};
+    // VR 2026.10.29: LayersThreaded = "Threaded" (ExtendOverlapByLayers_Threaded)
+    enum AddingLayersStrategy {LayersFromMatrix=0,LayersFromGraph=1,LayersOld=2,LayersThreaded=3};
 
     template <class SC = double,
               class LO = int,

@@ -48,6 +48,9 @@
 #include <Xpetra_Import.hpp>
 #include <Xpetra_ImportFactory.hpp>
 
+// VR 2026.10.29: ExtendOverlapByLayers_Threaded
+#include <Kokkos_Core.hpp>
+
 
 namespace FROSch {
 
@@ -938,6 +941,85 @@ namespace FROSch {
         outputMap = outputGraph->getColMap();
 
         return 0;
+    }
+
+    // VR 2026.10.29: threaded overlap layers, see the declaration
+    template <class LO,class GO,class NO>
+    RCP<const Map<LO,GO,NO> > ExtendOverlapByLayers_Threaded(RCP<const CrsGraph<LO,GO,NO> > graph,
+                                                             RCP<const Map<LO,GO,NO> > startMap,
+                                                             int overlap,
+                                                             Array<LO> &layerSizes,
+                                                             Array<RCP<const Map<LO,GO,NO> > > *layerMaps)
+    {
+        FROSCH_DETAILTIMER_START(extendOverlapByOneLayerTime,"ExtendOverlapByOneLayer");
+        const GO INVALID = Teuchos::OrdinalTraits<GO>::invalid();
+        RCP<const Map<LO,GO,NO> > rowMap = graph->getRowMap();
+        RCP<const Map<LO,GO,NO> > colMap = graph->getColMap();
+        const GO minGID = rowMap->getMinAllGlobalIndex();
+        const GO range = rowMap->getMaxAllGlobalIndex() - minGID + 1;
+
+        // row store: the rows of K this rank has, in global numbering; where[gid - minGID] = row in the store, -1 = not yet
+        std::vector<LO> where(range,-1);
+        std::vector<size_t> rowPtr(1,0);
+        std::vector<GO> cols;
+        const LO numRows = rowMap->getLocalNumElements();
+        rowPtr.reserve(numRows+1);
+        for (LO i=0; i<numRows; i++) {
+            ArrayView<const LO> indices;
+            graph->getLocalRowView(i,indices);
+            for (LO j=0; j<(LO) indices.size(); j++) cols.push_back(colMap->getGlobalElement(indices[j]));
+            where[rowMap->getGlobalElement(i)-minGID] = i;
+            rowPtr.push_back(cols.size());
+        }
+
+        std::vector<uint64_t> bits((range+63)/64);
+        Array<GO> set(startMap->getLocalElementList());
+        Array<GO> next;
+        layerSizes.resize(0);
+        if (layerMaps) layerMaps->resize(0);
+        for (int layer=0; layer<overlap; layer++) {
+            // 1. rows of the set not in the store (layer 1: the non-owned rows of the start map, then the rows added last)
+            Array<GO> missing;
+            for (LO s=0; s<(LO) set.size(); s++) if (where[set[s]-minGID] < 0) missing.push_back(set[s]);
+            // 2. fetch them from K's owners (collective, also with none missing): Import + doImport, no fillComplete
+            RCP<const Map<LO,GO,NO> > fetchMap = MapFactory<LO,GO,NO>::Build(rowMap->lib(),INVALID,missing(),0,rowMap->getComm());
+            RCP<Import<LO,GO,NO> > scatter = ImportFactory<LO,GO,NO>::Build(rowMap,fetchMap);
+            RCP<CrsGraph<LO,GO,NO> > fetched = CrsGraphFactory<LO,GO,NO>::Build(fetchMap,graph->getGlobalMaxNumRowEntries());
+            fetched->doImport(*graph,*scatter,ADD);
+            for (LO m=0; m<(LO) missing.size(); m++) {
+                ArrayView<const GO> indices;
+                fetched->getGlobalRowView(missing[m],indices);
+                where[missing[m]-minGID] = rowPtr.size()-1;
+                cols.insert(cols.end(),indices.begin(),indices.end());
+                rowPtr.push_back(cols.size());
+            }
+            // 3. mark the column GIDs of all rows of the set, on all threads of this rank (bits only get set: order-free)
+            std::fill(bits.begin(),bits.end(),0);
+            const GO* setPtr = set.getRawPtr();
+            const LO* wherePtr = where.data();
+            const size_t* rowPtrPtr = rowPtr.data();
+            const GO* colsPtr = cols.data();
+            uint64_t* bitsPtr = bits.data();
+            Kokkos::parallel_for("FROSch::ExtendOverlapByLayers_Threaded::mark",
+                                 Kokkos::RangePolicy<Kokkos::DefaultHostExecutionSpace>(0,set.size()),
+                                 [=](const size_t s) {
+                const LO p = wherePtr[setPtr[s]-minGID];
+                for (size_t j=rowPtrPtr[p]; j<rowPtrPtr[p+1]; j++) {
+                    const GO c = colsPtr[j]-minGID;
+                    Kokkos::atomic_fetch_or(&bitsPtr[c/64],uint64_t(1) << (c%64));
+                }
+            });
+            Kokkos::fence();
+            // 4. the next set from the bits, sorted by GID
+            next.resize(0);
+            for (size_t w=0; w<bits.size(); w++) {
+                for (uint64_t b=bits[w]; b; b&=b-1) next.push_back(minGID+GO(w*64+__builtin_ctzll(b)));
+            }
+            set.swap(next);
+            layerSizes.push_back(set.size());
+            if (layerMaps) layerMaps->push_back(MapFactory<LO,GO,NO>::Build(rowMap->lib(),INVALID,set(),0,rowMap->getComm()));
+        }
+        return MapFactory<LO,GO,NO>::Build(rowMap->lib(),INVALID,set(),0,rowMap->getComm());
     }
 
     template <class LO,class GO,class NO>
