@@ -44,6 +44,11 @@
 
 #include <FROSch_AlgebraicOverlappingOperator_decl.hpp>
 
+// VR 2026.10.29: overlap dumps (FROSCH_DUMP_DIR)
+#include <cstdlib>
+#include <fstream>
+#include <Xpetra_IO.hpp>
+
 
 namespace FROSch {
 
@@ -66,6 +71,8 @@ namespace FROSch {
         } else {
             FROSCH_ASSERT(false,"FROSch::AlgebraicOverlappingOperator: Specify a valid strategy for adding layers.");
         }
+        // VR 2026.10.29: overlap dumps for the before/after checks
+        if (const char* dumpDir = std::getenv("FROSCH_DUMP_DIR")) DumpDir_ = dumpDir;
     }
 
     template <class SC,class LO,class GO,class NO>
@@ -186,6 +193,11 @@ namespace FROSch {
         FROSCH_TIMER_START_LEVELID(computeTime,"AlgebraicOverlappingOperator::compute");
         FROSCH_ASSERT(this->IsInitialized_,"ERROR: AlgebraicOverlappingOperator has to be initialized before calling compute()");
         this->computeOverlappingOperator();
+        // VR 2026.10.29: D3, the local subdomain matrix the solver gets (18 significant digits, no exit)
+        if (!DumpDir_.empty()) {
+            Xpetra::IO<SC,LO,GO,NO>::Write(DumpDir_ + "/local_rank" + to_string(this->MpiComm_->getRank()) + ".mtx",
+                                           *this->OverlappingMatrix_);
+        }
         // DL 2026.04.09: For easy benchmarking of local subdomain problems!
 #ifdef PRINT_LOCAL_MTX
         int myRank = this->MpiComm_->getRank();
@@ -212,6 +224,31 @@ namespace FROSch {
         return "Algebraic Overlapping Operator";
     }
 
+    // VR 2026.10.29: one GID per line, in map order
+    template <class SC,class LO,class GO,class NO>
+    void AlgebraicOverlappingOperator<SC,LO,GO,NO>::dumpMapGIDs(ConstXMapPtr map,
+                                                                const string& name) const
+    {
+        ofstream out(DumpDir_ + "/" + name + "_rank" + to_string(this->MpiComm_->getRank()) + ".txt");
+        ArrayView<const GO> gids = map->getLocalElementList();
+        for (LO i=0; i<(LO) gids.size(); i++) out << gids[i] << "\n";
+    }
+
+    // VR 2026.10.29: one line per owned row: row GID, then its column GIDs in stored order
+    template <class SC,class LO,class GO,class NO>
+    void AlgebraicOverlappingOperator<SC,LO,GO,NO>::dumpGraphRows(ConstXCrsGraphPtr graph,
+                                                                  const string& name) const
+    {
+        ofstream out(DumpDir_ + "/" + name + "_rank" + to_string(this->MpiComm_->getRank()) + ".txt");
+        for (LO i=0; i<(LO) graph->getLocalNumRows(); i++) {
+            ArrayView<const LO> indices;
+            graph->getLocalRowView(i,indices);
+            out << graph->getRowMap()->getGlobalElement(i);
+            for (LO j=0; j<(LO) indices.size(); j++) out << " " << graph->getColMap()->getGlobalElement(indices[j]);
+            out << "\n";
+        }
+    }
+
     template <class SC,class LO,class GO,class NO>
     int AlgebraicOverlappingOperator<SC,LO,GO,NO>::buildOverlappingMatrices(int overlap,
                                                                             ConstXMapPtr repeatedMap)
@@ -231,6 +268,12 @@ namespace FROSch {
 
         this->OverlappingMap_ = repeatedMap;
         this->OverlappingMatrix_ = this->K_;
+
+        // VR 2026.10.29: D0 = K's owned rows, D1 layer 0 = the starting map
+        if (!DumpDir_.empty()) {
+            dumpGraphRows(this->K_->getCrsGraph(),"kgraph");
+            dumpMapGIDs(this->OverlappingMap_,"map_layer0");
+        }
 
         GO global = 0, sum = 0;
         LO local,minVal,maxVal;
@@ -299,6 +342,8 @@ namespace FROSch {
                 default:
                     FROSCH_ASSERT(false,"FROSch::AlgebraicOverlappingOperator: Specify a valid strategy for adding layers.");
             }
+            // VR 2026.10.29: D1 = the map after layer i+1
+            if (!DumpDir_.empty()) dumpMapGIDs(this->OverlappingMap_,"map_layer"+to_string(i+1));
             if (verbosity==All) {
                 FROSCH_DETAILTIMER_START_LEVELID(printStatisticsTime,"print statistics");
                 local = (LO) max((LO) this->OverlappingMap_->getLocalNumElements(),(LO) 0);
@@ -350,6 +395,9 @@ namespace FROSch {
                     FROSCH_ASSERT(false,"FROSch::AlgebraicOverlappingOperator: Specify a valid strategy for adding layers.");
             }
         }
+
+        // VR 2026.10.29: D2 = the final (sorted) overlap map
+        if (!DumpDir_.empty()) dumpMapGIDs(this->OverlappingMap_,"map_final");
 
         return 0;
     }

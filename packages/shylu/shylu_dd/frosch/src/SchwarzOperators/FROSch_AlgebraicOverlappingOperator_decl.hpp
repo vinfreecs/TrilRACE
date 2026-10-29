@@ -103,6 +103,12 @@ namespace FROSch {
 
         virtual void extractLocalSubdomainMatrix_Symbolic();
 
+        // VR 2026.10.29: dump the overlap construction for bit-exact before/after checks.
+        // Switched on by the environment variable FROSCH_DUMP_DIR (directory must exist); unset = no effect.
+        void dumpMapGIDs(ConstXMapPtr map, const string& name) const;
+        void dumpGraphRows(ConstXCrsGraphPtr graph, const string& name) const;
+        string DumpDir_ = "";
+
         AddingLayersStrategy AddingLayersStrategy_ = LayersFromGraph;
     };
 
