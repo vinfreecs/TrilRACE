@@ -45,7 +45,11 @@
 #include <ShyLU_DDFROSch_config.h>
 
 // DL 2026-02-06: Just for easy testing, but should be in CMakeLists
+// 2026-10-27: RACE stays the default; consumers build the plain Ifpack2 path with
+// -DFROSCH_NO_RACE (CMake option FROSCH_RACE=OFF) instead of editing this header.
+#if !defined(USE_RACE) && !defined(FROSCH_NO_RACE)
 #define USE_RACE
+#endif
 // #define DANE_DEBUG
 
 // FROSch
