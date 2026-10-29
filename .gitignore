@@ -157,3 +157,7 @@ rsync.*
 
 # pycharm ide
 .idea
+
+# local notes (Claude files, investigation reports)
+CLAUDE*.md
+*-investigation-*.md
