@@ -113,6 +113,60 @@ namespace FROSch {
         this->buildOverlappingMatrices(overlap,repeatedMap);
         this->initializeOverlappingOperator();
         this->updateLocalOverlappingMatrices_Symbolic();
+        // VR 2026.10.26: rows and nnz of the overlapped local subdomain matrix (what the subdomain solver gets),
+        // to match the overlap of different rank/thread layouts by data per core.
+        if (!this->ParameterList_->get("Verbosity","All").compare("All") && !this->localSubdomainMatrix_.is_null()) {
+            GO localRows = (GO) this->localSubdomainMatrix_->getLocalNumRows();
+            GO localNnz = (GO) this->localSubdomainMatrix_->getLocalNumEntries();
+            GO sumRows = 0, minRows = 0, maxRows = 0, sumNnz = 0, minNnz = 0, maxNnz = 0;
+            reduceAll(*this->MpiComm_,REDUCE_SUM,localRows,ptr(&sumRows));
+            reduceAll(*this->MpiComm_,REDUCE_MIN,localRows,ptr(&minRows));
+            reduceAll(*this->MpiComm_,REDUCE_MAX,localRows,ptr(&maxRows));
+            reduceAll(*this->MpiComm_,REDUCE_SUM,localNnz,ptr(&sumNnz));
+            reduceAll(*this->MpiComm_,REDUCE_MIN,localNnz,ptr(&minNnz));
+            reduceAll(*this->MpiComm_,REDUCE_MAX,localNnz,ptr(&maxNnz));
+            double numRanks = double(this->MpiComm_->getSize());
+            if (this->Verbose_) {
+                cout
+                << "\n" << setw(FROSCH_OUTPUT_INDENT) << " "
+                << setw(89) << "-----------------------------------------------------------------------------------------"
+                << "\n" << setw(FROSCH_OUTPUT_INDENT) << " "
+                << "| "
+                << left << setw(74) << "> Local Subdomain Matrix Statistics " << right << setw(8) << "(Level " << setw(2) << this->LevelID_ << ")"
+                << " |"
+                << "\n" << setw(FROSCH_OUTPUT_INDENT) << " "
+                << setw(89) << "========================================================================================="
+                << "\n" << setw(FROSCH_OUTPUT_INDENT) << " "
+                << "| " << left << setw(20) << " " << right
+                << " | " << setw(10) << "ranks"
+                << " | " << setw(10) << "avg"
+                << " | " << setw(10) << "min"
+                << " | " << setw(10) << "max"
+                << " | " << setw(10) << "global sum"
+                << " |"
+                << "\n" << setw(FROSCH_OUTPUT_INDENT) << " "
+                << setw(89) << "-----------------------------------------------------------------------------------------"
+                << "\n" << setw(FROSCH_OUTPUT_INDENT) << " "
+                << "| " << left << setw(20) << "Local rows" << right
+                << " | " << setw(10) << this->MpiComm_->getSize()
+                << " | " << setw(10) << setprecision(8) << sumRows/numRanks
+                << " | " << setw(10) << minRows
+                << " | " << setw(10) << maxRows
+                << " | " << setw(10) << sumRows
+                << " |"
+                << "\n" << setw(FROSCH_OUTPUT_INDENT) << " "
+                << "| " << left << setw(20) << "Local nnz" << right
+                << " | " << setw(10) << this->MpiComm_->getSize()
+                << " | " << setw(10) << setprecision(10) << sumNnz/numRanks
+                << " | " << setw(10) << minNnz
+                << " | " << setw(10) << maxNnz
+                << " | " << setw(10) << sumNnz
+                << " |"
+                << "\n" << setw(FROSCH_OUTPUT_INDENT) << " "
+                << setw(89) << "-----------------------------------------------------------------------------------------"
+                << endl;
+            }
+        }
         bool reuseSymbolicFactorization = this->ParameterList_->get("Reuse: Symbolic Factorization",true);
         if (this->ExtractLocalSubdomainMatrix_Symbolic_Done_ && reuseSymbolicFactorization) {
             // if reuseSymbolicFactorization=false, we call initializeSubdomainSolver is called during compute
