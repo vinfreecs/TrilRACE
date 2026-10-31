@@ -236,6 +236,8 @@ namespace FROSch {
         bool ExtractLocalSubdomainMatrix_Symbolic_Done_ = false;
         XMatrixPtr subdomainMatrix_;
         XMatrixPtr localSubdomainMatrix_;
+        // VR 2026.10.31: "Reuse: Subdomain Values": subdomainMatrix_ still holds K_'s values, the next compute need not import them
+        bool SubdomainValuesCurrent_ = false;
 
         bool Verbose_ = false;
 

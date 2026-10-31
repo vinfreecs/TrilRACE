@@ -433,7 +433,9 @@ namespace FROSch {
         FROSCH_DETAILTIMER_START_LEVELID(updateLocalOverlappingMatricesTime,"AlgebraicOverlappingOperator::updateLocalOverlappingMatrices");
         if (this->ExtractLocalSubdomainMatrix_Symbolic_Done_) {
             // using original K_ as input
-            ExtractLocalSubdomainMatrix_Compute(this->K_, this->subdomainMatrix_, this->localSubdomainMatrix_);
+            // VR 2026.10.31: first compute after the symbolic phase with "Reuse: Subdomain Values": the values are already there
+            ExtractLocalSubdomainMatrix_Compute(this->K_, this->subdomainMatrix_, this->localSubdomainMatrix_, !this->SubdomainValuesCurrent_);
+            this->SubdomainValuesCurrent_ = false;
             this->OverlappingMatrix_ = this->localSubdomainMatrix_.getConst();
         } else {
             if (this->IsComputed_) {
@@ -475,6 +477,11 @@ namespace FROSch {
 
             // turn flag on
             this->ExtractLocalSubdomainMatrix_Symbolic_Done_ = true;
+
+            // VR 2026.10.31: subdomainMatrix_ was imported from K_ above (not with the strategies that overwrite OverlappingMatrix_).
+            // Off by default: a caller changing K_ in place between initialize and compute, without resetMatrix, would get stale values.
+            this->SubdomainValuesCurrent_ = this->ParameterList_->get("Reuse: Subdomain Values",false)
+                                            && this->OverlappingMatrix_.getRawPtr() == this->K_.getRawPtr();
         }
     }
 }

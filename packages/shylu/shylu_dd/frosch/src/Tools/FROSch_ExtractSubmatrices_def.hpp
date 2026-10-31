@@ -347,16 +347,19 @@ namespace FROSch {
     template <class SC,class LO,class GO,class NO>
     void ExtractLocalSubdomainMatrix_Compute(RCP<const Matrix<SC,LO,GO,NO> > globalMatrix,
                                              RCP<      Matrix<SC,LO,GO,NO> > subdomainMatrix,
-                                             RCP<      Matrix<SC,LO,GO,NO> > localSubdomainMatrix)
+                                             RCP<      Matrix<SC,LO,GO,NO> > localSubdomainMatrix,
+                                             bool importValues)
     {
         FROSCH_DETAILTIMER_START(extractLocalSubdomainMatrixTime_compute, "ExtractLocalSubdomainMatrix_Compute");
         const SC zero = ScalarTraits<SC>::zero();
         auto subdomainRowMap = subdomainMatrix->getRowMap();
 
-        RCP<Import<LO,GO,NO> > scatter = ImportFactory<LO,GO,NO>::Build(globalMatrix->getRowMap(),subdomainRowMap);
-        subdomainMatrix->setAllToScalar(zero);
-        subdomainMatrix->resumeFill();
-        subdomainMatrix->doImport(*globalMatrix, *scatter, ADD);
+        if (importValues) {
+            RCP<Import<LO,GO,NO> > scatter = ImportFactory<LO,GO,NO>::Build(globalMatrix->getRowMap(),subdomainRowMap);
+            subdomainMatrix->setAllToScalar(zero);
+            subdomainMatrix->resumeFill();
+            subdomainMatrix->doImport(*globalMatrix, *scatter, ADD);
+        }
 
 // "fillComplete" is quite expensive, and it seem to be cheaper to replace values each row at a time
 #if 0 //defined(HAVE_XPETRA_KOKKOS_REFACTOR) && defined(HAVE_XPETRA_TPETRA)

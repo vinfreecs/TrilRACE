@@ -116,6 +116,7 @@ namespace FROSch {
     // This function must be actively called by the user, and is only for recycling purposes.
     // The preconditioner is still computed and this point or the preconditioner was never computed and can now be computed with the matrix k now.
         K_ = k;
+        SubdomainValuesCurrent_ = false; // VR 2026.10.31: new K_, subdomainMatrix_ is out of date
         return 0;
     }
 
