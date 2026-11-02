@@ -51,10 +51,9 @@ namespace FROSch {
     using namespace Teuchos;
     using namespace Xpetra;
 
-    // VR 2026.10.29: LayersThreaded = "Threaded" (ExtendOverlapByLayers_Threaded)
-    enum AddingLayersStrategy {LayersFromMatrix=0,LayersFromGraph=1,LayersOld=2,LayersThreaded=3};
-    // VR 2026.11.02: "Extraction Strategy": how the local subdomain matrix is built (ExtractLocalSubdomainMatrix_*)
-    enum ExtractionStrategy {ExtractionDefault=0,ExtractionThreaded=1};
+    enum AddingLayersStrategy {LayersFromMatrix=0,LayersFromGraph=1,LayersOld=2,LayersThreaded=3}; // VR 2026.10.29: LayersThreaded
+    // VR 2026.11.02: "Extraction Strategy"
+    enum LocalExtractionStrategy {ExtractionDefault=0,ExtractionThreaded=1};
 
     template <class SC = double,
               class LO = int,
@@ -106,17 +105,12 @@ namespace FROSch {
 
         virtual void extractLocalSubdomainMatrix_Symbolic();
 
-        // VR 2026.10.29: dump the overlap construction for bit-exact before/after checks.
-        // Switched on by the environment variable FROSCH_DUMP_DIR (directory must exist); unset = no effect.
-        void dumpMapGIDs(ConstXMapPtr map, const string& name) const;
-        void dumpGraphRows(ConstXCrsGraphPtr graph, const string& name) const;
-        string DumpDir_ = "";
+        void printLocalSubdomainMatrixStatistics() const; // VR 2026.10.26
 
         AddingLayersStrategy AddingLayersStrategy_ = LayersFromGraph;
 
-        // VR 2026.11.02: "Extraction Strategy" = "Threaded": entry j of subdomainMatrix_ -> entry of localSubdomainMatrix_
-        // (-1 = column outside the overlap map), from ExtractLocalSubdomainMatrix_Symbolic_Threaded
-        ExtractionStrategy ExtractionStrategy_ = ExtractionDefault;
+        // VR 2026.11.02: subdomainMatrix_ entry -> localSubdomainMatrix_ entry (-1 = dropped)
+        LocalExtractionStrategy ExtractionStrategy_ = ExtractionDefault;
         Kokkos::View<GO*,typename NO::device_type> ExtractPositions_;
     };
 

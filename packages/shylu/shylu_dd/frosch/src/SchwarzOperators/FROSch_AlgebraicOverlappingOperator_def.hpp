@@ -44,12 +44,6 @@
 
 #include <FROSch_AlgebraicOverlappingOperator_decl.hpp>
 
-// VR 2026.10.29: overlap dumps (FROSCH_DUMP_DIR)
-#include <cstdlib>
-#include <fstream>
-#include <Xpetra_IO.hpp>
-
-
 namespace FROSch {
 
     using namespace std;
@@ -69,11 +63,11 @@ namespace FROSch {
         } else if (!this->ParameterList_->get("Adding Layers Strategy","CrsGraph").compare("Old")) {
             AddingLayersStrategy_ = LayersOld;
         } else if (!this->ParameterList_->get("Adding Layers Strategy","CrsGraph").compare("Threaded")) {
-            AddingLayersStrategy_ = LayersThreaded;
+            AddingLayersStrategy_ = LayersThreaded; // VR 2026.10.29
         } else {
             FROSCH_ASSERT(false,"FROSch::AlgebraicOverlappingOperator: Specify a valid strategy for adding layers.");
         }
-        // VR 2026.11.02: "Default" = row-by-row extraction (FROSch's), "Threaded" = ExtractLocalSubdomainMatrix_*_Threaded
+        // VR 2026.11.02: "Extraction Strategy"
         if (!this->ParameterList_->get("Extraction Strategy","Default").compare("Default")) {
             ExtractionStrategy_ = ExtractionDefault;
         } else if (!this->ParameterList_->get("Extraction Strategy","Default").compare("Threaded")) {
@@ -81,8 +75,6 @@ namespace FROSch {
         } else {
             FROSCH_ASSERT(false,"FROSch::AlgebraicOverlappingOperator: Specify a valid extraction strategy (Default or Threaded).");
         }
-        // VR 2026.10.29: overlap dumps for the before/after checks
-        if (const char* dumpDir = std::getenv("FROSCH_DUMP_DIR")) DumpDir_ = dumpDir;
     }
 
     template <class SC,class LO,class GO,class NO>
@@ -105,14 +97,14 @@ namespace FROSch {
             << "| " << left << setw(41) << "Adding layers strategy" << right
             << " | " << setw(41) << this->ParameterList_->get("Adding Layers Strategy","CrsGraph")
             << " |"
-            // VR 2026.11.02: print the switches, so every log shows which were on (tools/compare_dumps.py --expect)
+            // VR 2026.11.02: switches
             << "\n" << setw(FROSCH_OUTPUT_INDENT) << " "
             << "| " << left << setw(41) << "Extraction strategy" << right
             << " | " << setw(41) << this->ParameterList_->get("Extraction Strategy","Default")
             << " |"
             << "\n" << setw(FROSCH_OUTPUT_INDENT) << " "
             << "| " << left << setw(41) << "Reuse subdomain values" << right
-            << " | " << setw(41) << (this->ParameterList_->get("Reuse: Subdomain Values",false) ? "true" : "false")
+            << " | " << setw(41) << this->ParameterList_->get("Reuse: Subdomain Values",false)
             << " |"
             << "\n" << setw(FROSCH_OUTPUT_INDENT) << " "
             << "| " << left << setw(41) << "Combine mode in overlap" << right
@@ -139,59 +131,9 @@ namespace FROSch {
         this->buildOverlappingMatrices(overlap,repeatedMap);
         this->initializeOverlappingOperator();
         this->updateLocalOverlappingMatrices_Symbolic();
-        // VR 2026.10.26: rows and nnz of the overlapped local subdomain matrix (what the subdomain solver gets),
-        // to match the overlap of different rank/thread layouts by data per core.
+        // VR 2026.10.26: local subdomain matrix statistics
         if (!this->ParameterList_->get("Verbosity","All").compare("All") && !this->localSubdomainMatrix_.is_null()) {
-            GO localRows = (GO) this->localSubdomainMatrix_->getLocalNumRows();
-            GO localNnz = (GO) this->localSubdomainMatrix_->getLocalNumEntries();
-            GO sumRows = 0, minRows = 0, maxRows = 0, sumNnz = 0, minNnz = 0, maxNnz = 0;
-            reduceAll(*this->MpiComm_,REDUCE_SUM,localRows,ptr(&sumRows));
-            reduceAll(*this->MpiComm_,REDUCE_MIN,localRows,ptr(&minRows));
-            reduceAll(*this->MpiComm_,REDUCE_MAX,localRows,ptr(&maxRows));
-            reduceAll(*this->MpiComm_,REDUCE_SUM,localNnz,ptr(&sumNnz));
-            reduceAll(*this->MpiComm_,REDUCE_MIN,localNnz,ptr(&minNnz));
-            reduceAll(*this->MpiComm_,REDUCE_MAX,localNnz,ptr(&maxNnz));
-            double numRanks = double(this->MpiComm_->getSize());
-            if (this->Verbose_) {
-                cout
-                << "\n" << setw(FROSCH_OUTPUT_INDENT) << " "
-                << setw(89) << "-----------------------------------------------------------------------------------------"
-                << "\n" << setw(FROSCH_OUTPUT_INDENT) << " "
-                << "| "
-                << left << setw(74) << "> Local Subdomain Matrix Statistics " << right << setw(8) << "(Level " << setw(2) << this->LevelID_ << ")"
-                << " |"
-                << "\n" << setw(FROSCH_OUTPUT_INDENT) << " "
-                << setw(89) << "========================================================================================="
-                << "\n" << setw(FROSCH_OUTPUT_INDENT) << " "
-                << "| " << left << setw(20) << " " << right
-                << " | " << setw(10) << "ranks"
-                << " | " << setw(10) << "avg"
-                << " | " << setw(10) << "min"
-                << " | " << setw(10) << "max"
-                << " | " << setw(10) << "global sum"
-                << " |"
-                << "\n" << setw(FROSCH_OUTPUT_INDENT) << " "
-                << setw(89) << "-----------------------------------------------------------------------------------------"
-                << "\n" << setw(FROSCH_OUTPUT_INDENT) << " "
-                << "| " << left << setw(20) << "Local rows" << right
-                << " | " << setw(10) << this->MpiComm_->getSize()
-                << " | " << setw(10) << setprecision(8) << sumRows/numRanks
-                << " | " << setw(10) << minRows
-                << " | " << setw(10) << maxRows
-                << " | " << setw(10) << sumRows
-                << " |"
-                << "\n" << setw(FROSCH_OUTPUT_INDENT) << " "
-                << "| " << left << setw(20) << "Local nnz" << right
-                << " | " << setw(10) << this->MpiComm_->getSize()
-                << " | " << setw(10) << setprecision(10) << sumNnz/numRanks
-                << " | " << setw(10) << minNnz
-                << " | " << setw(10) << maxNnz
-                << " | " << setw(10) << sumNnz
-                << " |"
-                << "\n" << setw(FROSCH_OUTPUT_INDENT) << " "
-                << setw(89) << "-----------------------------------------------------------------------------------------"
-                << endl;
-            }
+            printLocalSubdomainMatrixStatistics();
         }
         bool reuseSymbolicFactorization = this->ParameterList_->get("Reuse: Symbolic Factorization",true);
         if (this->ExtractLocalSubdomainMatrix_Symbolic_Done_ && reuseSymbolicFactorization) {
@@ -212,11 +154,6 @@ namespace FROSch {
         FROSCH_TIMER_START_LEVELID(computeTime,"AlgebraicOverlappingOperator::compute");
         FROSCH_ASSERT(this->IsInitialized_,"ERROR: AlgebraicOverlappingOperator has to be initialized before calling compute()");
         this->computeOverlappingOperator();
-        // VR 2026.10.29: D3, the local subdomain matrix the solver gets (18 significant digits, no exit)
-        if (!DumpDir_.empty()) {
-            Xpetra::IO<SC,LO,GO,NO>::Write(DumpDir_ + "/local_rank" + to_string(this->MpiComm_->getRank()) + ".mtx",
-                                           *this->OverlappingMatrix_);
-        }
         // DL 2026.04.09: For easy benchmarking of local subdomain problems!
 #ifdef PRINT_LOCAL_MTX
         int myRank = this->MpiComm_->getRank();
@@ -243,28 +180,57 @@ namespace FROSch {
         return "Algebraic Overlapping Operator";
     }
 
-    // VR 2026.10.29: one GID per line, in map order
+    // VR 2026.10.26: rows and nnz of the overlapped local subdomain matrix per rank
     template <class SC,class LO,class GO,class NO>
-    void AlgebraicOverlappingOperator<SC,LO,GO,NO>::dumpMapGIDs(ConstXMapPtr map,
-                                                                const string& name) const
+    void AlgebraicOverlappingOperator<SC,LO,GO,NO>::printLocalSubdomainMatrixStatistics() const
     {
-        ofstream out(DumpDir_ + "/" + name + "_rank" + to_string(this->MpiComm_->getRank()) + ".txt");
-        ArrayView<const GO> gids = map->getLocalElementList();
-        for (LO i=0; i<(LO) gids.size(); i++) out << gids[i] << "\n";
-    }
-
-    // VR 2026.10.29: one line per owned row: row GID, then its column GIDs in stored order
-    template <class SC,class LO,class GO,class NO>
-    void AlgebraicOverlappingOperator<SC,LO,GO,NO>::dumpGraphRows(ConstXCrsGraphPtr graph,
-                                                                  const string& name) const
-    {
-        ofstream out(DumpDir_ + "/" + name + "_rank" + to_string(this->MpiComm_->getRank()) + ".txt");
-        for (LO i=0; i<(LO) graph->getLocalNumRows(); i++) {
-            ArrayView<const LO> indices;
-            graph->getLocalRowView(i,indices);
-            out << graph->getRowMap()->getGlobalElement(i);
-            for (LO j=0; j<(LO) indices.size(); j++) out << " " << graph->getColMap()->getGlobalElement(indices[j]);
-            out << "\n";
+        long long local[2] = {(long long) this->localSubdomainMatrix_->getLocalNumRows(),
+                              (long long) this->localSubdomainMatrix_->getLocalNumEntries()};
+        long long sum[2] = {0,0}, minVal[2] = {0,0}, maxVal[2] = {0,0};
+        reduceAll(*this->MpiComm_,REDUCE_SUM,2,local,sum);
+        reduceAll(*this->MpiComm_,REDUCE_MIN,2,local,minVal);
+        reduceAll(*this->MpiComm_,REDUCE_MAX,2,local,maxVal);
+        if (this->Verbose_) {
+            const double numRanks = double(this->MpiComm_->getSize());
+            const streamsize oldPrecision = cout.precision();
+            cout
+            << "\n" << setw(FROSCH_OUTPUT_INDENT) << " "
+            << setw(89) << "-----------------------------------------------------------------------------------------"
+            << "\n" << setw(FROSCH_OUTPUT_INDENT) << " "
+            << "| "
+            << left << setw(74) << "> Local Subdomain Matrix Statistics " << right << setw(8) << "(Level " << setw(2) << this->LevelID_ << ")"
+            << " |"
+            << "\n" << setw(FROSCH_OUTPUT_INDENT) << " "
+            << setw(89) << "========================================================================================="
+            << "\n" << setw(FROSCH_OUTPUT_INDENT) << " "
+            << "| " << left << setw(20) << " " << right
+            << " | " << setw(10) << "ranks"
+            << " | " << setw(10) << "avg"
+            << " | " << setw(10) << "min"
+            << " | " << setw(10) << "max"
+            << " | " << setw(10) << "global sum"
+            << " |"
+            << "\n" << setw(FROSCH_OUTPUT_INDENT) << " "
+            << setw(89) << "-----------------------------------------------------------------------------------------"
+            << "\n" << setw(FROSCH_OUTPUT_INDENT) << " "
+            << "| " << left << setw(20) << "Local rows" << right
+            << " | " << setw(10) << this->MpiComm_->getSize()
+            << " | " << setw(10) << setprecision(8) << sum[0]/numRanks
+            << " | " << setw(10) << minVal[0]
+            << " | " << setw(10) << maxVal[0]
+            << " | " << setw(10) << sum[0]
+            << " |"
+            << "\n" << setw(FROSCH_OUTPUT_INDENT) << " "
+            << "| " << left << setw(20) << "Local nnz" << right
+            << " | " << setw(10) << this->MpiComm_->getSize()
+            << " | " << setw(10) << setprecision(10) << sum[1]/numRanks
+            << " | " << setw(10) << minVal[1]
+            << " | " << setw(10) << maxVal[1]
+            << " | " << setw(10) << sum[1]
+            << " |"
+            << "\n" << setw(FROSCH_OUTPUT_INDENT) << " "
+            << setw(89) << "-----------------------------------------------------------------------------------------"
+            << setprecision(oldPrecision) << endl;
         }
     }
 
@@ -287,12 +253,6 @@ namespace FROSch {
 
         this->OverlappingMap_ = repeatedMap;
         this->OverlappingMatrix_ = this->K_;
-
-        // VR 2026.10.29: D0 = K's owned rows, D1 layer 0 = the starting map
-        if (!DumpDir_.empty()) {
-            dumpGraphRows(this->K_->getCrsGraph(),"kgraph");
-            dumpMapGIDs(this->OverlappingMap_,"map_layer0");
-        }
 
         GO global = 0, sum = 0;
         LO local,minVal,maxVal;
@@ -344,14 +304,11 @@ namespace FROSch {
 
         // Adding Layers of Elements to the overlapping subdomains
         ConstXCrsGraphPtr overlappingGraph = this->OverlappingMatrix_->getCrsGraph();
-        // VR 2026.10.29: "Threaded" builds all layers in one call (FROSch_Tools: ExtendOverlapByLayers_Threaded); the loop
-        // below then only prints the statistics (layer sizes) and writes the dumps (layer maps, kept only when dumping)
+        // VR 2026.10.29: "Threaded": all layers in one call; the loop below only prints the statistics
         Array<LO> threadedLayerSizes;
-        Array<ConstXMapPtr> threadedLayerMaps;
         ConstXMapPtr threadedFinalMap;
         if (AddingLayersStrategy_==LayersThreaded && overlap>0) {
-            threadedFinalMap = ExtendOverlapByLayers_Threaded(this->K_->getCrsGraph(),this->OverlappingMap_,overlap,threadedLayerSizes,
-                                                              DumpDir_.empty() ? nullptr : &threadedLayerMaps);
+            threadedFinalMap = ExtendOverlapByLayers_Threaded(this->K_->getCrsGraph(),this->OverlappingMap_,overlap,threadedLayerSizes);
         }
         for (int i=0; i<overlap; i++) {
             switch (AddingLayersStrategy_) {
@@ -368,19 +325,14 @@ namespace FROSch {
                     break;
 
                 case LayersThreaded:
-                    // VR 2026.10.29: built above; the map of each layer exists only when dumping
-                    if (!DumpDir_.empty()) this->OverlappingMap_ = threadedLayerMaps[i];
                     if (i==overlap-1) this->OverlappingMap_ = threadedFinalMap;
                     break;
 
                 default:
                     FROSCH_ASSERT(false,"FROSch::AlgebraicOverlappingOperator: Specify a valid strategy for adding layers.");
             }
-            // VR 2026.10.29: D1 = the map after layer i+1
-            if (!DumpDir_.empty()) dumpMapGIDs(this->OverlappingMap_,"map_layer"+to_string(i+1));
             if (verbosity==All) {
                 FROSCH_DETAILTIMER_START_LEVELID(printStatisticsTime,"print statistics");
-                // VR 2026.10.29: "Threaded" keeps only the size of each layer (its map only when dumping)
                 local = (AddingLayersStrategy_==LayersThreaded) ? threadedLayerSizes[i]
                                                                 : (LO) this->OverlappingMap_->getLocalNumElements();
                 local = max(local,(LO) 0);
@@ -429,7 +381,7 @@ namespace FROSch {
                     break;
 
                 case LayersThreaded:
-                    // VR 2026.10.29: already sorted; the same call as CrsGraph, so the final map is built the same way
+                    // already sorted; re-built like CrsGraph for identical maps
                     this->OverlappingMap_ = SortMapByGlobalIndex(this->OverlappingMap_);
                     break;
 
@@ -437,9 +389,6 @@ namespace FROSch {
                     FROSCH_ASSERT(false,"FROSch::AlgebraicOverlappingOperator: Specify a valid strategy for adding layers.");
             }
         }
-
-        // VR 2026.10.29: D2 = the final (sorted) overlap map
-        if (!DumpDir_.empty()) dumpMapGIDs(this->OverlappingMap_,"map_final");
 
         return 0;
     }
@@ -450,9 +399,8 @@ namespace FROSch {
         FROSCH_DETAILTIMER_START_LEVELID(updateLocalOverlappingMatricesTime,"AlgebraicOverlappingOperator::updateLocalOverlappingMatrices");
         if (this->ExtractLocalSubdomainMatrix_Symbolic_Done_) {
             // using original K_ as input
-            // VR 2026.10.31: first compute after the symbolic phase with "Reuse: Subdomain Values": the values are already there
+            // VR 2026.10.31: "Reuse: Subdomain Values": the first compute after the symbolic phase skips the import
             if (ExtractionStrategy_ == ExtractionThreaded) {
-                // VR 2026.11.02: the symbolic phase already put K_'s values into the local matrix
                 if (!this->SubdomainValuesCurrent_) {
                     ExtractLocalSubdomainMatrix_Compute_Threaded(this->K_, this->subdomainMatrix_, this->localSubdomainMatrix_, ExtractPositions_);
                 }
@@ -485,19 +433,17 @@ namespace FROSch {
     {
         if (this->OverlappingMap_->lib() == UseTpetra) {
             FROSCH_DETAILTIMER_START_LEVELID(AlgebraicOverlappin_extractLocalSubdomainMatrix_SymbolicTime,"AlgebraicOverlappinOperator::extractLocalSubdomainMatrix_Symbolic");
-            // VR 2026.11.02: detail timers ("Symbolic: ..."), to find the serial parts; no logic change
             RCP<Import<LO,GO,NO> > scatter;
             {
-                FROSCH_DETAILTIMER_START(symImportInitTime,"Symbolic: build Import");
+                FROSCH_DETAILTIMER_START_LEVELID(buildImportTime,"AlgebraicOverlappingOperator::extractLocalSubdomainMatrix_Symbolic::buildImport");
                 scatter = ImportFactory<LO,GO,NO>::Build(this->OverlappingMatrix_->getRowMap(), this->OverlappingMap_);
             }
             RCP<const Comm<LO> > SerialComm = rcp(new MpiComm<LO>(MPI_COMM_SELF));
             RCP<Map<LO,GO,NO> > localSubdomainMap = MapFactory<LO,GO,NO>::Build(this->OverlappingMap_->lib(), this->OverlappingMap_->getLocalNumElements(), 0, SerialComm);
             if (ExtractionStrategy_ == ExtractionThreaded) {
-                // VR 2026.11.02: import straight into a fill-completed matrix (Tpetra importAndFillComplete, threaded
-                // unpack), then the local matrix with its values from the CRS arrays, threaded
+                // VR 2026.11.02: importAndFillComplete, then the local matrix in parallel
                 {
-                    FROSCH_DETAILTIMER_START(symTafcTime,"Symbolic: importAndFillComplete");
+                    FROSCH_DETAILTIMER_START_LEVELID(importAndFillCompleteTime,"AlgebraicOverlappingOperator::extractLocalSubdomainMatrix_Symbolic::importAndFillComplete");
                     this->subdomainMatrix_ = MatrixFactory<SC,LO,GO,NO>::Build(this->OverlappingMatrix_, *scatter,
                                                                               this->OverlappingMatrix_->getDomainMap(),
                                                                               this->OverlappingMatrix_->getRangeMap());
@@ -505,26 +451,25 @@ namespace FROSch {
                 ExtractLocalSubdomainMatrix_Symbolic_Threaded(this->subdomainMatrix_.getConst(), localSubdomainMap.getConst(),
                                                               this->localSubdomainMatrix_, ExtractPositions_);
             } else {
-            // buid sudomain matrix
-            this->subdomainMatrix_ = MatrixFactory<SC,LO,GO,NO>::Build(this->OverlappingMap_, this->OverlappingMatrix_->getGlobalMaxNumRowEntries());
-            {
-                FROSCH_DETAILTIMER_START(symDoImportTime,"Symbolic: doImport rows (Default)");
-                this->subdomainMatrix_->doImport(*(this->OverlappingMatrix_), *scatter, ADD);
-            }
+                // buid sudomain matrix
+                this->subdomainMatrix_ = MatrixFactory<SC,LO,GO,NO>::Build(this->OverlappingMap_, this->OverlappingMatrix_->getGlobalMaxNumRowEntries());
+                {
+                    FROSCH_DETAILTIMER_START_LEVELID(doImportTime,"AlgebraicOverlappingOperator::extractLocalSubdomainMatrix_Symbolic::doImport");
+                    this->subdomainMatrix_->doImport(*(this->OverlappingMatrix_), *scatter, ADD);
+                }
 
-            // build local subdomain matrix
-            this->localSubdomainMatrix_ = MatrixFactory<SC,LO,GO,NO>::Build(localSubdomainMap, localSubdomainMap, this->OverlappingMatrix_->getGlobalMaxNumRowEntries());
+                // build local subdomain matrix
+                this->localSubdomainMatrix_ = MatrixFactory<SC,LO,GO,NO>::Build(localSubdomainMap, localSubdomainMap, this->OverlappingMatrix_->getGlobalMaxNumRowEntries());
 
-            // fill in column indexes
-            ExtractLocalSubdomainMatrix_Symbolic(this->subdomainMatrix_, // input
-                                                 this->localSubdomainMatrix_);   // output
+                // fill in column indexes
+                ExtractLocalSubdomainMatrix_Symbolic(this->subdomainMatrix_, // input
+                                                     this->localSubdomainMatrix_);   // output
             }
 
             // turn flag on
             this->ExtractLocalSubdomainMatrix_Symbolic_Done_ = true;
 
-            // VR 2026.10.31: subdomainMatrix_ was imported from K_ above (not with the strategies that overwrite OverlappingMatrix_).
-            // Off by default: a caller changing K_ in place between initialize and compute, without resetMatrix, would get stale values.
+            // VR 2026.10.31: opt-in, valid only if K_ is not changed in place before compute()
             this->SubdomainValuesCurrent_ = this->ParameterList_->get("Reuse: Subdomain Values",false)
                                             && this->OverlappingMatrix_.getRawPtr() == this->K_.getRawPtr();
         }

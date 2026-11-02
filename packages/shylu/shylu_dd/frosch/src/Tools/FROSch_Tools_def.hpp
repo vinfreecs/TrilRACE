@@ -48,8 +48,7 @@
 #include <Xpetra_Import.hpp>
 #include <Xpetra_ImportFactory.hpp>
 
-// VR 2026.10.29: ExtendOverlapByLayers_Threaded
-#include <Kokkos_Core.hpp>
+#include <Kokkos_Core.hpp> // VR 2026.10.29
 
 
 namespace FROSch {
@@ -943,36 +942,35 @@ namespace FROSch {
         return 0;
     }
 
-    // VR 2026.10.29: threaded overlap layers, see the declaration
+    // VR 2026.10.29
     template <class LO,class GO,class NO>
     RCP<const Map<LO,GO,NO> > ExtendOverlapByLayers_Threaded(RCP<const CrsGraph<LO,GO,NO> > graph,
                                                              RCP<const Map<LO,GO,NO> > startMap,
                                                              int overlap,
-                                                             Array<LO> &layerSizes,
-                                                             Array<RCP<const Map<LO,GO,NO> > > *layerMaps)
+                                                             Array<LO> &layerSizes)
     {
-        FROSCH_DETAILTIMER_START(extendOverlapByOneLayerTime,"ExtendOverlapByOneLayer");
+        FROSCH_DETAILTIMER_START(extendOverlapByLayersThreadedTime,"ExtendOverlapByLayers_Threaded");
         const GO INVALID = Teuchos::OrdinalTraits<GO>::invalid();
         RCP<const Map<LO,GO,NO> > rowMap = graph->getRowMap();
         RCP<const Map<LO,GO,NO> > colMap = graph->getColMap();
         const GO minGID = rowMap->getMinAllGlobalIndex();
         const GO range = rowMap->getMaxAllGlobalIndex() - minGID + 1;
 
-        // VR 2026.11.02: detail timers per step ("ExtendOverlap_Threaded: ..."), to find the serial parts; no logic change
-        // row store: the rows of K this rank has, in global numbering; where[gid - minGID] = row in the store, -1 = not yet
+        // where[gid-minGID]: row index in rowPtr/cols, -1 = not fetched yet
         std::vector<LO> where;
         std::vector<size_t> rowPtr(1,0);
         std::vector<GO> cols;
         std::vector<uint64_t> bits;
         {
-            FROSCH_DETAILTIMER_START(etAllocTime,"ExtendOverlap_Threaded: allocate global arrays");
+            FROSCH_DETAILTIMER_START(etAllocTime,"ExtendOverlapByLayers_Threaded::allocate");
             where.assign(range,-1);
             bits.assign((range+63)/64,0);
         }
         const LO numRows = rowMap->getLocalNumElements();
         {
-            FROSCH_DETAILTIMER_START(etOwnedTime,"ExtendOverlap_Threaded: copy owned rows");
+            FROSCH_DETAILTIMER_START(etOwnedTime,"ExtendOverlapByLayers_Threaded::copyOwnedRows");
             rowPtr.reserve(numRows+1);
+            cols.reserve(graph->getLocalNumEntries());
             for (LO i=0; i<numRows; i++) {
                 ArrayView<const LO> indices;
                 graph->getLocalRowView(i,indices);
@@ -985,30 +983,29 @@ namespace FROSch {
         Array<GO> set(startMap->getLocalElementList());
         Array<GO> next;
         layerSizes.resize(0);
-        if (layerMaps) layerMaps->resize(0);
         for (int layer=0; layer<overlap; layer++) {
-            // 1. rows of the set not in the store (layer 1: the non-owned rows of the start map, then the rows added last)
+            // 1. missing rows
             Array<GO> missing;
             {
-                FROSCH_DETAILTIMER_START(etMissingTime,"ExtendOverlap_Threaded: list missing rows");
+                FROSCH_DETAILTIMER_START(etMissingTime,"ExtendOverlapByLayers_Threaded::listMissing");
                 for (LO s=0; s<(LO) set.size(); s++) if (where[set[s]-minGID] < 0) missing.push_back(set[s]);
             }
-            // 2. fetch them from K's owners (collective, also with none missing): Import + doImport, no fillComplete
+            // 2. fetch from the owners (collective, also with none missing)
             RCP<const Map<LO,GO,NO> > fetchMap;
             RCP<Import<LO,GO,NO> > scatter;
             RCP<CrsGraph<LO,GO,NO> > fetched;
             {
-                FROSCH_DETAILTIMER_START(etFetchSetupTime,"ExtendOverlap_Threaded: fetch map + import");
+                FROSCH_DETAILTIMER_START(etFetchSetupTime,"ExtendOverlapByLayers_Threaded::buildImport");
                 fetchMap = MapFactory<LO,GO,NO>::Build(rowMap->lib(),INVALID,missing(),0,rowMap->getComm());
                 scatter = ImportFactory<LO,GO,NO>::Build(rowMap,fetchMap);
                 fetched = CrsGraphFactory<LO,GO,NO>::Build(fetchMap,graph->getGlobalMaxNumRowEntries());
             }
             {
-                FROSCH_DETAILTIMER_START(etFetchTime,"ExtendOverlap_Threaded: fetch rows (doImport)");
+                FROSCH_DETAILTIMER_START(etFetchTime,"ExtendOverlapByLayers_Threaded::doImport");
                 fetched->doImport(*graph,*scatter,ADD);
             }
             {
-                FROSCH_DETAILTIMER_START(etAppendTime,"ExtendOverlap_Threaded: append fetched rows");
+                FROSCH_DETAILTIMER_START(etAppendTime,"ExtendOverlapByLayers_Threaded::appendRows");
                 for (LO m=0; m<(LO) missing.size(); m++) {
                     ArrayView<const GO> indices;
                     fetched->getGlobalRowView(missing[m],indices);
@@ -1017,9 +1014,9 @@ namespace FROSch {
                     rowPtr.push_back(cols.size());
                 }
             }
-            // 3. mark the column GIDs of all rows of the set, on all threads of this rank (bits only get set: order-free)
+            // 3. mark the next layer (host threads, std containers; bits only get set, so the order does not matter)
             {
-                FROSCH_DETAILTIMER_START(etMarkTime,"ExtendOverlap_Threaded: mark next layer");
+                FROSCH_DETAILTIMER_START(etMarkTime,"ExtendOverlapByLayers_Threaded::mark");
                 std::fill(bits.begin(),bits.end(),0);
                 const GO* setPtr = set.getRawPtr();
                 const LO* wherePtr = where.data();
@@ -1037,9 +1034,9 @@ namespace FROSch {
                 });
                 Kokkos::fence();
             }
-            // 4. the next set from the bits, sorted by GID
+            // 4. bits -> sorted set
             {
-                FROSCH_DETAILTIMER_START(etBitsTime,"ExtendOverlap_Threaded: bits to sorted set");
+                FROSCH_DETAILTIMER_START(etBitsTime,"ExtendOverlapByLayers_Threaded::bitsToSet");
                 next.resize(0);
                 for (size_t w=0; w<bits.size(); w++) {
                     for (uint64_t b=bits[w]; b; b&=b-1) next.push_back(minGID+GO(w*64+__builtin_ctzll(b)));
@@ -1047,12 +1044,8 @@ namespace FROSch {
                 set.swap(next);
             }
             layerSizes.push_back(set.size());
-            if (layerMaps) {
-                FROSCH_DETAILTIMER_START(etLayerMapTime,"ExtendOverlap_Threaded: layer maps (dump only)");
-                layerMaps->push_back(MapFactory<LO,GO,NO>::Build(rowMap->lib(),INVALID,set(),0,rowMap->getComm()));
-            }
         }
-        FROSCH_DETAILTIMER_START(etFinalMapTime,"ExtendOverlap_Threaded: final map");
+        FROSCH_DETAILTIMER_START(etFinalMapTime,"ExtendOverlapByLayers_Threaded::finalMap");
         return MapFactory<LO,GO,NO>::Build(rowMap->lib(),INVALID,set(),0,rowMap->getComm());
     }
 

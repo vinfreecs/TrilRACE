@@ -68,27 +68,21 @@ namespace FROSch {
     void ExtractLocalSubdomainMatrix_Symbolic(RCP<Matrix<SC,LO,GO,NO> > subdomainMatrix,        // input  : globalMatrix, re-distributed with map
                                               RCP<Matrix<SC,LO,GO,NO> > localSubdomainMatrix);  // output : local submatrix
 
+    // VR 2026.10.31: importValues=false: subdomainMatrix already holds globalMatrix's values
     template <class SC,class LO,class GO,class NO>
     void ExtractLocalSubdomainMatrix_Compute(RCP<const Matrix<SC,LO,GO,NO> > globalMatrix,
                                              RCP<      Matrix<SC,LO,GO,NO> > subdomainMatrix,
                                              RCP<      Matrix<SC,LO,GO,NO> > repeatedMatrix,
-                                             bool importValues = true); // VR 2026.10.31: false = subdomainMatrix already holds globalMatrix's values
+                                             bool importValues = true);
 
-    // VR 2026.11.02: "Extraction Strategy" = "Threaded" (AlgebraicOverlappingOperator). The same local matrix as
-    // _Symbolic + _Compute above (every entry whose column is in the overlap map, stored zeros kept, each row sorted by
-    // local column as fillComplete does), built with Kokkos over the rows of a fill-completed subdomainMatrix
-    // (MatrixFactory::Build(K, Import) = Tpetra importAndFillComplete, threaded unpack) instead of row-by-row inserts.
-    // The local matrix gets subdomainMatrix's values right away. positions(j) = index in the local matrix of entry j of
-    // subdomainMatrix, -1 = column outside the overlap map; _Compute_Threaded uses it to copy new values.
+    // VR 2026.11.02: Threaded _Symbolic: local matrix (with values) from a fill-completed subdomainMatrix; positions(j) = its entry, -1 = dropped
     template <class SC,class LO,class GO,class NO>
     void ExtractLocalSubdomainMatrix_Symbolic_Threaded(RCP<const Matrix<SC,LO,GO,NO> > subdomainMatrix,     // input : fill-completed, row map = overlap map
                                                        RCP<const Map<LO,GO,NO> > localSubdomainMap,         // input : 0..n-1 on MPI_COMM_SELF
                                                        RCP<Matrix<SC,LO,GO,NO> > &localSubdomainMatrix,     // output
                                                        Kokkos::View<GO*,typename NO::device_type> &positions); // output
 
-    // VR 2026.11.02: new values of globalMatrix into the local matrix of _Symbolic_Threaded, in place (the subdomain
-    // solver keeps its pointer). The rows are imported into a matrix with subdomainMatrix's fixed structure (static
-    // graph: Tpetra's threaded unpack), which then replaces subdomainMatrix; the copy runs through positions.
+    // VR 2026.11.02: Threaded _Compute: re-import globalMatrix and copy the values through positions, in place
     template <class SC,class LO,class GO,class NO>
     void ExtractLocalSubdomainMatrix_Compute_Threaded(RCP<const Matrix<SC,LO,GO,NO> > globalMatrix,
                                                       RCP<Matrix<SC,LO,GO,NO> > &subdomainMatrix,

@@ -432,14 +432,13 @@ namespace FROSch {
         return;
     }
 
-    // VR 2026.11.02: "Extraction Strategy" = "Threaded", see the declaration
+    // VR 2026.11.02
     template <class SC,class LO,class GO,class NO>
     void ExtractLocalSubdomainMatrix_Symbolic_Threaded(RCP<const Matrix<SC,LO,GO,NO> > subdomainMatrix,
                                                        RCP<const Map<LO,GO,NO> > localSubdomainMap,
                                                        RCP<Matrix<SC,LO,GO,NO> > &localSubdomainMatrix,
                                                        Kokkos::View<GO*,typename NO::device_type> &positions)
     {
-        // same timer name as the default version, so the timer reports compare directly
         FROSCH_DETAILTIMER_START(extractLocalSubdomainMatrixTime_symbolic, "ExtractLocalSubdomainMatrix_Symbolic");
 #if defined(HAVE_XPETRA_KOKKOS_REFACTOR) && defined(HAVE_XPETRA_TPETRA)
         FROSCH_ASSERT(subdomainMatrix->getRowMap()->lib() == UseTpetra,"ExtractLocalSubdomainMatrix_Symbolic_Threaded: Tpetra only");
@@ -485,8 +484,7 @@ namespace FROSch {
         size_type nnz = 0;
         Kokkos::deep_copy(nnz,Kokkos::subview(rowptr,numRows));
 
-        // 3. per row: kept entries in column order (insertion sort, rows are short), values copied, and where each
-        //    entry of subdomainMatrix went. Each row writes only its own ranges: no races
+        // 3. per row: kept entries sorted by column, values and positions (each row writes only its own ranges)
         indices_type entries("FROSch::localEntries",nnz);
         values_type values("FROSch::localValues",nnz);
         Kokkos::View<size_type*,device_type> source("FROSch::localSource",nnz);
@@ -530,7 +528,7 @@ namespace FROSch {
 #endif
     }
 
-    // VR 2026.11.02: see the declaration
+    // VR 2026.11.02
     template <class SC,class LO,class GO,class NO>
     void ExtractLocalSubdomainMatrix_Compute_Threaded(RCP<const Matrix<SC,LO,GO,NO> > globalMatrix,
                                                       RCP<Matrix<SC,LO,GO,NO> > &subdomainMatrix,
