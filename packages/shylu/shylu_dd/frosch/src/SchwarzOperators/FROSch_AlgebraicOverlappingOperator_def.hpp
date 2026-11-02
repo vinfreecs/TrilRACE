@@ -402,7 +402,7 @@ namespace FROSch {
             // VR 2026.10.31: "Reuse: Subdomain Values": the first compute after the symbolic phase skips the import
             if (ExtractionStrategy_ == ExtractionThreaded) {
                 if (!this->SubdomainValuesCurrent_) {
-                    ExtractLocalSubdomainMatrix_Compute_Threaded(this->K_, this->subdomainMatrix_, this->localSubdomainMatrix_, ExtractPositions_);
+                    ExtractLocalSubdomainMatrix_Compute_Threaded(this->K_, this->OverlappingMap_, this->localSubdomainMatrix_);
                 }
             } else {
                 ExtractLocalSubdomainMatrix_Compute(this->K_, this->subdomainMatrix_, this->localSubdomainMatrix_, !this->SubdomainValuesCurrent_);
@@ -441,15 +441,16 @@ namespace FROSch {
             RCP<const Comm<LO> > SerialComm = rcp(new MpiComm<LO>(MPI_COMM_SELF));
             RCP<Map<LO,GO,NO> > localSubdomainMap = MapFactory<LO,GO,NO>::Build(this->OverlappingMap_->lib(), this->OverlappingMap_->getLocalNumElements(), 0, SerialComm);
             if (ExtractionStrategy_ == ExtractionThreaded) {
-                // VR 2026.11.02: importAndFillComplete, then the local matrix in parallel
+                // VR 2026.11.02: importAndFillComplete, then the local matrix in parallel; the imported matrix is not kept
+                RCP<const Matrix<SC,LO,GO,NO> > subdomainMatrix;
                 {
                     FROSCH_DETAILTIMER_START_LEVELID(importAndFillCompleteTime,"AlgebraicOverlappingOperator::extractLocalSubdomainMatrix_Symbolic::importAndFillComplete");
-                    this->subdomainMatrix_ = MatrixFactory<SC,LO,GO,NO>::Build(this->OverlappingMatrix_, *scatter,
-                                                                              this->OverlappingMatrix_->getDomainMap(),
-                                                                              this->OverlappingMatrix_->getRangeMap());
+                    subdomainMatrix = MatrixFactory<SC,LO,GO,NO>::Build(this->OverlappingMatrix_, *scatter,
+                                                                        this->OverlappingMatrix_->getDomainMap(),
+                                                                        this->OverlappingMatrix_->getRangeMap());
                 }
-                ExtractLocalSubdomainMatrix_Symbolic_Threaded(this->subdomainMatrix_.getConst(), localSubdomainMap.getConst(),
-                                                              this->localSubdomainMatrix_, ExtractPositions_);
+                ExtractLocalSubdomainMatrix_Symbolic_Threaded(subdomainMatrix, localSubdomainMap.getConst(), this->localSubdomainMatrix_);
+                this->subdomainMatrix_ = null;
             } else {
                 // buid sudomain matrix
                 this->subdomainMatrix_ = MatrixFactory<SC,LO,GO,NO>::Build(this->OverlappingMap_, this->OverlappingMatrix_->getGlobalMaxNumRowEntries());

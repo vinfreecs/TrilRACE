@@ -75,19 +75,21 @@ namespace FROSch {
                                              RCP<      Matrix<SC,LO,GO,NO> > repeatedMatrix,
                                              bool importValues = true);
 
-    // VR 2026.11.02: Threaded _Symbolic: local matrix (with values) from a fill-completed subdomainMatrix; positions(j) = its entry, -1 = dropped
+    // VR 2026.11.02: column of subdomainMatrix -> local index of the overlap map, -1 = outside
+    template <class SC,class LO,class GO,class NO>
+    Kokkos::View<LO*,typename NO::device_type> ColumnsToOverlapIndices(RCP<const Matrix<SC,LO,GO,NO> > subdomainMatrix);
+
+    // VR 2026.11.02: Threaded _Symbolic: local matrix (with values) from a fill-completed subdomainMatrix
     template <class SC,class LO,class GO,class NO>
     void ExtractLocalSubdomainMatrix_Symbolic_Threaded(RCP<const Matrix<SC,LO,GO,NO> > subdomainMatrix,     // input : fill-completed, row map = overlap map
                                                        RCP<const Map<LO,GO,NO> > localSubdomainMap,         // input : 0..n-1 on MPI_COMM_SELF
-                                                       RCP<Matrix<SC,LO,GO,NO> > &localSubdomainMatrix,     // output
-                                                       Kokkos::View<GO*,typename NO::device_type> &positions); // output
+                                                       RCP<Matrix<SC,LO,GO,NO> > &localSubdomainMatrix);    // output
 
-    // VR 2026.11.02: Threaded _Compute: re-import globalMatrix and copy the values through positions, in place
+    // VR 2026.11.02: Threaded _Compute: re-import globalMatrix's overlapped rows (temporary) and update the values in place
     template <class SC,class LO,class GO,class NO>
     void ExtractLocalSubdomainMatrix_Compute_Threaded(RCP<const Matrix<SC,LO,GO,NO> > globalMatrix,
-                                                      RCP<Matrix<SC,LO,GO,NO> > &subdomainMatrix,
-                                                      RCP<Matrix<SC,LO,GO,NO> > localSubdomainMatrix,
-                                                      const Kokkos::View<GO*,typename NO::device_type> &positions);
+                                                      RCP<const Map<LO,GO,NO> > overlappingMap,
+                                                      RCP<Matrix<SC,LO,GO,NO> > localSubdomainMatrix);
     // ----------------------------------------------------------- //
 
     template <class SC,class LO,class GO,class NO>

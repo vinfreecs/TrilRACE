@@ -109,9 +109,7 @@ namespace FROSch {
 
         AddingLayersStrategy AddingLayersStrategy_ = LayersFromGraph;
 
-        // VR 2026.11.02: subdomainMatrix_ entry -> localSubdomainMatrix_ entry (-1 = dropped)
-        LocalExtractionStrategy ExtractionStrategy_ = ExtractionDefault;
-        Kokkos::View<GO*,typename NO::device_type> ExtractPositions_;
+        LocalExtractionStrategy ExtractionStrategy_ = ExtractionDefault; // VR 2026.11.02
     };
 
 }
