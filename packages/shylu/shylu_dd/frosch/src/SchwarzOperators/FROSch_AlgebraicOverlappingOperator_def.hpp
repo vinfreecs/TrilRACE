@@ -73,6 +73,14 @@ namespace FROSch {
         } else {
             FROSCH_ASSERT(false,"FROSch::AlgebraicOverlappingOperator: Specify a valid strategy for adding layers.");
         }
+        // VR 2026.11.02: "Default" = row-by-row extraction (FROSch's), "Threaded" = ExtractLocalSubdomainMatrix_*_Threaded
+        if (!this->ParameterList_->get("Extraction Strategy","Default").compare("Default")) {
+            ExtractionStrategy_ = ExtractionDefault;
+        } else if (!this->ParameterList_->get("Extraction Strategy","Default").compare("Threaded")) {
+            ExtractionStrategy_ = ExtractionThreaded;
+        } else {
+            FROSCH_ASSERT(false,"FROSch::AlgebraicOverlappingOperator: Specify a valid extraction strategy (Default or Threaded).");
+        }
         // VR 2026.10.29: overlap dumps for the before/after checks
         if (const char* dumpDir = std::getenv("FROSCH_DUMP_DIR")) DumpDir_ = dumpDir;
     }
@@ -96,6 +104,15 @@ namespace FROSch {
             << "\n" << setw(FROSCH_OUTPUT_INDENT) << " "
             << "| " << left << setw(41) << "Adding layers strategy" << right
             << " | " << setw(41) << this->ParameterList_->get("Adding Layers Strategy","CrsGraph")
+            << " |"
+            // VR 2026.11.02: print the switches, so every log shows which were on (tools/compare_dumps.py --expect)
+            << "\n" << setw(FROSCH_OUTPUT_INDENT) << " "
+            << "| " << left << setw(41) << "Extraction strategy" << right
+            << " | " << setw(41) << this->ParameterList_->get("Extraction Strategy","Default")
+            << " |"
+            << "\n" << setw(FROSCH_OUTPUT_INDENT) << " "
+            << "| " << left << setw(41) << "Reuse subdomain values" << right
+            << " | " << setw(41) << (this->ParameterList_->get("Reuse: Subdomain Values",false) ? "true" : "false")
             << " |"
             << "\n" << setw(FROSCH_OUTPUT_INDENT) << " "
             << "| " << left << setw(41) << "Combine mode in overlap" << right
@@ -434,7 +451,14 @@ namespace FROSch {
         if (this->ExtractLocalSubdomainMatrix_Symbolic_Done_) {
             // using original K_ as input
             // VR 2026.10.31: first compute after the symbolic phase with "Reuse: Subdomain Values": the values are already there
-            ExtractLocalSubdomainMatrix_Compute(this->K_, this->subdomainMatrix_, this->localSubdomainMatrix_, !this->SubdomainValuesCurrent_);
+            if (ExtractionStrategy_ == ExtractionThreaded) {
+                // VR 2026.11.02: the symbolic phase already put K_'s values into the local matrix
+                if (!this->SubdomainValuesCurrent_) {
+                    ExtractLocalSubdomainMatrix_Compute_Threaded(this->K_, this->subdomainMatrix_, this->localSubdomainMatrix_, ExtractPositions_);
+                }
+            } else {
+                ExtractLocalSubdomainMatrix_Compute(this->K_, this->subdomainMatrix_, this->localSubdomainMatrix_, !this->SubdomainValuesCurrent_);
+            }
             this->SubdomainValuesCurrent_ = false;
             this->OverlappingMatrix_ = this->localSubdomainMatrix_.getConst();
         } else {
@@ -461,19 +485,29 @@ namespace FROSch {
     {
         if (this->OverlappingMap_->lib() == UseTpetra) {
             FROSCH_DETAILTIMER_START_LEVELID(AlgebraicOverlappin_extractLocalSubdomainMatrix_SymbolicTime,"AlgebraicOverlappinOperator::extractLocalSubdomainMatrix_Symbolic");
+            RCP<Import<LO,GO,NO> > scatter = ImportFactory<LO,GO,NO>::Build(this->OverlappingMatrix_->getRowMap(), this->OverlappingMap_);
+            RCP<const Comm<LO> > SerialComm = rcp(new MpiComm<LO>(MPI_COMM_SELF));
+            RCP<Map<LO,GO,NO> > localSubdomainMap = MapFactory<LO,GO,NO>::Build(this->OverlappingMap_->lib(), this->OverlappingMap_->getLocalNumElements(), 0, SerialComm);
+            if (ExtractionStrategy_ == ExtractionThreaded) {
+                // VR 2026.11.02: import straight into a fill-completed matrix (Tpetra importAndFillComplete, threaded
+                // unpack), then the local matrix with its values from the CRS arrays, threaded
+                this->subdomainMatrix_ = MatrixFactory<SC,LO,GO,NO>::Build(this->OverlappingMatrix_, *scatter,
+                                                                          this->OverlappingMatrix_->getDomainMap(),
+                                                                          this->OverlappingMatrix_->getRangeMap());
+                ExtractLocalSubdomainMatrix_Symbolic_Threaded(this->subdomainMatrix_.getConst(), localSubdomainMap.getConst(),
+                                                              this->localSubdomainMatrix_, ExtractPositions_);
+            } else {
             // buid sudomain matrix
             this->subdomainMatrix_ = MatrixFactory<SC,LO,GO,NO>::Build(this->OverlappingMap_, this->OverlappingMatrix_->getGlobalMaxNumRowEntries());
-            RCP<Import<LO,GO,NO> > scatter = ImportFactory<LO,GO,NO>::Build(this->OverlappingMatrix_->getRowMap(), this->OverlappingMap_);
             this->subdomainMatrix_->doImport(*(this->OverlappingMatrix_), *scatter, ADD);
 
             // build local subdomain matrix
-            RCP<const Comm<LO> > SerialComm = rcp(new MpiComm<LO>(MPI_COMM_SELF));
-            RCP<Map<LO,GO,NO> > localSubdomainMap = MapFactory<LO,GO,NO>::Build(this->OverlappingMap_->lib(), this->OverlappingMap_->getLocalNumElements(), 0, SerialComm);
             this->localSubdomainMatrix_ = MatrixFactory<SC,LO,GO,NO>::Build(localSubdomainMap, localSubdomainMap, this->OverlappingMatrix_->getGlobalMaxNumRowEntries());
 
             // fill in column indexes
             ExtractLocalSubdomainMatrix_Symbolic(this->subdomainMatrix_, // input
                                                  this->localSubdomainMatrix_);   // output
+            }
 
             // turn flag on
             this->ExtractLocalSubdomainMatrix_Symbolic_Done_ = true;

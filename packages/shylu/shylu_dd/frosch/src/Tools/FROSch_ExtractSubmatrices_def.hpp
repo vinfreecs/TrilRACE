@@ -432,6 +432,139 @@ namespace FROSch {
         return;
     }
 
+    // VR 2026.11.02: "Extraction Strategy" = "Threaded", see the declaration
+    template <class SC,class LO,class GO,class NO>
+    void ExtractLocalSubdomainMatrix_Symbolic_Threaded(RCP<const Matrix<SC,LO,GO,NO> > subdomainMatrix,
+                                                       RCP<const Map<LO,GO,NO> > localSubdomainMap,
+                                                       RCP<Matrix<SC,LO,GO,NO> > &localSubdomainMatrix,
+                                                       Kokkos::View<GO*,typename NO::device_type> &positions)
+    {
+        // same timer name as the default version, so the timer reports compare directly
+        FROSCH_DETAILTIMER_START(extractLocalSubdomainMatrixTime_symbolic, "ExtractLocalSubdomainMatrix_Symbolic");
+#if defined(HAVE_XPETRA_KOKKOS_REFACTOR) && defined(HAVE_XPETRA_TPETRA)
+        FROSCH_ASSERT(subdomainMatrix->getRowMap()->lib() == UseTpetra,"ExtractLocalSubdomainMatrix_Symbolic_Threaded: Tpetra only");
+        FROSCH_ASSERT(subdomainMatrix->isFillComplete(),"ExtractLocalSubdomainMatrix_Symbolic_Threaded: subdomainMatrix must be fill-complete");
+        using crsmat_type     = typename Matrix<SC,LO,GO,NO>::local_matrix_type;
+        using graph_type      = typename crsmat_type::StaticCrsGraphType;
+        using rowptr_type     = typename graph_type::row_map_type::non_const_type;
+        using indices_type    = typename graph_type::entries_type::non_const_type;
+        using values_type     = typename crsmat_type::values_type::non_const_type;
+        using size_type       = typename rowptr_type::non_const_value_type;
+        using index_type      = typename indices_type::non_const_value_type;
+        using device_type     = typename NO::device_type;
+        using execution_space = typename Map<LO,GO,NO>::local_map_type::execution_space;
+
+        const LO numRows = (LO) subdomainMatrix->getRowMap()->getLocalNumElements();
+        const LO numCols = (LO) subdomainMatrix->getColMap()->getLocalNumElements();
+        FROSCH_ASSERT((LO) localSubdomainMap->getLocalNumElements() == numRows,"ExtractLocalSubdomainMatrix_Symbolic_Threaded: map sizes differ");
+        const auto rowMap = subdomainMatrix->getRowMap()->getLocalMap();
+        const auto colMap = subdomainMatrix->getColMap()->getLocalMap();
+        const auto sub = subdomainMatrix->getLocalMatrixDevice();
+
+        // 1. column of subdomainMatrix -> local row of the overlap map (= local column of the local matrix), -1 outside
+        Kokkos::View<LO*,device_type> colToLocal("FROSch::colToLocal",numCols);
+        Kokkos::parallel_for("FROSch::ExtractLocalSubdomainMatrix_Symbolic_Threaded::colToLocal",
+                             Kokkos::RangePolicy<execution_space>(0,numCols),
+                             KOKKOS_LAMBDA(const LO c) {
+            colToLocal(c) = rowMap.getLocalElement(colMap.getGlobalElement(c));
+        });
+
+        // 2. entries kept per row -> row pointers
+        rowptr_type rowptr("FROSch::localRowptr",numRows+1);
+        Kokkos::parallel_for("FROSch::ExtractLocalSubdomainMatrix_Symbolic_Threaded::count",
+                             Kokkos::RangePolicy<execution_space>(0,numRows),
+                             KOKKOS_LAMBDA(const LO i) {
+            size_type n = 0;
+            for (size_type j=sub.graph.row_map(i); j<sub.graph.row_map(i+1); j++) {
+                if (colToLocal(sub.graph.entries(j)) >= 0) n++;
+            }
+            rowptr(i+1) = n;
+        });
+        Kokkos::fence();
+        KokkosKernels::Impl::kk_inclusive_parallel_prefix_sum<rowptr_type,execution_space>(numRows+1,rowptr);
+        size_type nnz = 0;
+        Kokkos::deep_copy(nnz,Kokkos::subview(rowptr,numRows));
+
+        // 3. per row: kept entries in column order (insertion sort, rows are short), values copied, and where each
+        //    entry of subdomainMatrix went. Each row writes only its own ranges: no races
+        indices_type entries("FROSch::localEntries",nnz);
+        values_type values("FROSch::localValues",nnz);
+        Kokkos::View<size_type*,device_type> source("FROSch::localSource",nnz);
+        positions = Kokkos::View<GO*,device_type>("FROSch::extractPositions",sub.nnz());
+        const auto pos = positions;
+        Kokkos::parallel_for("FROSch::ExtractLocalSubdomainMatrix_Symbolic_Threaded::fill",
+                             Kokkos::RangePolicy<execution_space>(0,numRows),
+                             KOKKOS_LAMBDA(const LO i) {
+            const size_type begin = rowptr(i);
+            size_type end = begin;
+            for (size_type j=sub.graph.row_map(i); j<sub.graph.row_map(i+1); j++) {
+                pos(j) = -1;
+                const LO c = colToLocal(sub.graph.entries(j));
+                if (c >= 0) {
+                    size_type p = end;
+                    while (p > begin && entries(p-1) > (index_type) c) {
+                        entries(p) = entries(p-1);
+                        values(p) = values(p-1);
+                        source(p) = source(p-1);
+                        p--;
+                    }
+                    entries(p) = (index_type) c;
+                    values(p) = sub.values(j);
+                    source(p) = j;
+                    end++;
+                }
+            }
+            for (size_type p=begin; p<end; p++) pos(source(p)) = (GO) p;
+        });
+        Kokkos::fence();
+
+        // 4. the local matrix straight from the arrays (no insert, no general fillComplete)
+        graph_type localGraph(entries,rowptr);
+        crsmat_type localMatrix("FROSch::localSubdomainMatrix",numRows,values,localGraph);
+        RCP<ParameterList> params = rcp(new ParameterList());
+        params->set("sorted",true);
+        localSubdomainMatrix = MatrixFactory<SC,LO,GO,NO>::Build(localMatrix,localSubdomainMap,localSubdomainMap,
+                                                                 localSubdomainMap,localSubdomainMap,params);
+#else
+        FROSCH_ASSERT(false,"ExtractLocalSubdomainMatrix_Symbolic_Threaded needs Tpetra and HAVE_XPETRA_KOKKOS_REFACTOR");
+#endif
+    }
+
+    // VR 2026.11.02: see the declaration
+    template <class SC,class LO,class GO,class NO>
+    void ExtractLocalSubdomainMatrix_Compute_Threaded(RCP<const Matrix<SC,LO,GO,NO> > globalMatrix,
+                                                      RCP<Matrix<SC,LO,GO,NO> > &subdomainMatrix,
+                                                      RCP<Matrix<SC,LO,GO,NO> > localSubdomainMatrix,
+                                                      const Kokkos::View<GO*,typename NO::device_type> &positions)
+    {
+        FROSCH_DETAILTIMER_START(extractLocalSubdomainMatrixTime_compute, "ExtractLocalSubdomainMatrix_Compute");
+#if defined(HAVE_XPETRA_KOKKOS_REFACTOR) && defined(HAVE_XPETRA_TPETRA)
+        using execution_space = typename Map<LO,GO,NO>::local_map_type::execution_space;
+        FROSCH_ASSERT((size_t) positions.extent(0) == subdomainMatrix->getLocalNumEntries(),
+                      "ExtractLocalSubdomainMatrix_Compute_Threaded: positions do not belong to subdomainMatrix");
+
+        // the rows of globalMatrix into a matrix with subdomainMatrix's fixed structure: starts at 0, ADD = old 0 + value
+        RCP<Matrix<SC,LO,GO,NO> > fresh = MatrixFactory<SC,LO,GO,NO>::Build(subdomainMatrix->getCrsGraph());
+        RCP<Import<LO,GO,NO> > scatter = ImportFactory<LO,GO,NO>::Build(globalMatrix->getRowMap(),subdomainMatrix->getRowMap());
+        fresh->doImport(*globalMatrix,*scatter,ADD);
+        fresh->fillComplete(subdomainMatrix->getDomainMap(),subdomainMatrix->getRangeMap());
+        subdomainMatrix = fresh;
+
+        // copy into the local matrix, in place
+        const auto sub = subdomainMatrix->getLocalMatrixDevice();
+        const auto local = localSubdomainMatrix->getLocalMatrixDevice();
+        const auto pos = positions;
+        Kokkos::parallel_for("FROSch::ExtractLocalSubdomainMatrix_Compute_Threaded::copy",
+                             Kokkos::RangePolicy<execution_space>(0,sub.nnz()),
+                             KOKKOS_LAMBDA(const size_t j) {
+            if (pos(j) >= 0) local.values(pos(j)) = sub.values(j);
+        });
+        Kokkos::fence();
+#else
+        FROSCH_ASSERT(false,"ExtractLocalSubdomainMatrix_Compute_Threaded needs Tpetra and HAVE_XPETRA_KOKKOS_REFACTOR");
+#endif
+    }
+
     template <class SC,class LO,class GO,class NO>
     RCP<const Matrix<SC,LO,GO,NO> > ExtractLocalSubdomainMatrix(RCP<const Matrix<SC,LO,GO,NO> > globalMatrix,
                                                                 RCP<const Map<LO,GO,NO> > map,

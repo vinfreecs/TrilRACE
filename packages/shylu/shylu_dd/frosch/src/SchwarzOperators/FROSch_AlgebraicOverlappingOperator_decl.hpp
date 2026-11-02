@@ -53,6 +53,8 @@ namespace FROSch {
 
     // VR 2026.10.29: LayersThreaded = "Threaded" (ExtendOverlapByLayers_Threaded)
     enum AddingLayersStrategy {LayersFromMatrix=0,LayersFromGraph=1,LayersOld=2,LayersThreaded=3};
+    // VR 2026.11.02: "Extraction Strategy": how the local subdomain matrix is built (ExtractLocalSubdomainMatrix_*)
+    enum ExtractionStrategy {ExtractionDefault=0,ExtractionThreaded=1};
 
     template <class SC = double,
               class LO = int,
@@ -111,6 +113,11 @@ namespace FROSch {
         string DumpDir_ = "";
 
         AddingLayersStrategy AddingLayersStrategy_ = LayersFromGraph;
+
+        // VR 2026.11.02: "Extraction Strategy" = "Threaded": entry j of subdomainMatrix_ -> entry of localSubdomainMatrix_
+        // (-1 = column outside the overlap map), from ExtractLocalSubdomainMatrix_Symbolic_Threaded
+        ExtractionStrategy ExtractionStrategy_ = ExtractionDefault;
+        Kokkos::View<GO*,typename NO::device_type> ExtractPositions_;
     };
 
 }
