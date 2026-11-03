@@ -46,6 +46,7 @@
 
 #include <Ifpack2_ReorderFilter_decl.hpp>
 #include <Ifpack2_Details_OneLevelFactory_decl.hpp>
+#include <Tpetra_BlockCrsMatrix_decl.hpp> // VR 2026-11-03
 
 // FROSch
 #include <FROSch_Solver_def.hpp>
@@ -93,6 +94,13 @@ namespace FROSch {
         using Ifpack2PreconditionerPtr          = RCP<Ifpack2::Preconditioner<SC,LO,GO,NO> >;
         using TRowMatrixFilterType              = Ifpack2::ReorderFilter<TRowMatrix>;
 
+        // VR 2026-11-03: "Local Matrix Format" = "BlockCrs"
+        using TMap                              = Tpetra::Map<LO,GO,NO>;
+        using TCrsGraph                         = Tpetra::CrsGraph<LO,GO,NO>;
+        using TBlockCrsMatrix                   = Tpetra::BlockCrsMatrix<SC,LO,GO,NO>;
+        using TVector                           = Tpetra::Vector<SC,LO,GO,NO>;
+        using HostLOView                        = Kokkos::View<LO*,Kokkos::HostSpace>;
+
     public:
 
         //! Initialize the internal solver
@@ -133,6 +141,26 @@ namespace FROSch {
         Teuchos::ArrayRCP<LO>    perm;
         Teuchos::ArrayRCP<LO>    revperm;
         int globalRank_ = 0;
+
+        // VR 2026-11-03: local matrix as a Tpetra::BlockCrsMatrix (Chebyshev only), nodes found from the pattern
+        void buildBlockCrsStructure();
+        void fillBlockCrsValues();
+        void checkBlockCrsApply() const;
+
+        bool useBlockCrs_ = false;
+        LO blockSize_ = 3;
+        ConstTCrsMatrixPtr blockPointMatrix_ = null;    // the point matrix FROSch keeps updating in place
+        RCP<TCrsGraph> blockGraph_ = null;
+        RCP<TBlockCrsMatrix> blockMatrix_ = null;
+        RCP<TVector> blockInvDiagonal_ = null;          // given to Chebyshev ("chebyshev: operator inv diagonal")
+        SC blockMinDiagonal_ = ScalarTraits<SC>::eps();  // as Ifpack2 Chebyshev's "chebyshev: min diagonal value"
+        HostLOView blockPerm_;                          // point row: old -> new
+        HostLOView blockInvPerm_;                       // point row: new -> old
+        HostLOView blockColToRow_;                      // local column index of the point matrix -> local row index
+        bool blockChecked_ = false;
+        bool blockIdentity_ = false;                    // permutation = identity (input already node-ordered): no gather / scatter
+        mutable RCP<TMultiVector> blockX_ = null;
+        mutable RCP<TMultiVector> blockY_ = null;
 
         friend class SolverFactory<SC,LO,GO,NO>;
     };
