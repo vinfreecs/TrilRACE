@@ -92,6 +92,20 @@ namespace FROSch {
                 checkBlockCrsApply();
                 blockChecked_ = true;
             }
+            // Ifpack2 Chebyshev deep-copies the inverse diagonal in setParameters(): hand it over now that it is filled
+            // (every compute, so a recompute gets the new values); the full list, as setParameters resets missing ones
+            {
+                using IST = typename TBlockCrsMatrix::impl_scalar_type;
+                using ATS = Kokkos::Details::ArithTraits<IST>;
+                auto d = blockInvDiagonal_->getLocalViewHost(Tpetra::Access::ReadOnly);
+                LO bad = 0;
+                for (size_t k=0; k<d.extent(0); ++k) {
+                    if (d(k,0)==ATS::zero() || ATS::isNan(d(k,0)) || ATS::isInf(d(k,0))) ++bad;
+                }
+                FROSCH_ASSERT(bad==0,"FROSch::Ifpack2PreconditionerTpetra: BlockCrs: "+to_string(bad)+" entries of the inverse diagonal are 0, NaN or Inf.");
+            }
+            blockIfpack2Params_.set("chebyshev: operator inv diagonal",rcp_implicit_cast<const TVector>(blockInvDiagonal_));
+            Ifpack2Preconditioner_->setParameters(blockIfpack2Params_);
         }
         Ifpack2Preconditioner_->compute();
 #ifdef DANE_EIGS_CHECK
@@ -281,14 +295,15 @@ namespace FROSch {
             if (ifpack2ParameterList->isSublist(solverName)) {
                 ifpack2ParameterList = sublist(ifpack2ParameterList, solverName);
             }
-            ParameterList ifpack2Copy(*ifpack2ParameterList);
-            ifpack2Copy.setName("Ifpack2");
-            FROSCH_ASSERT(!ifpack2Copy.isParameter("chebyshev: operator inv diagonal"),"FROSch::Ifpack2PreconditionerTpetra: BlockCrs computes \"chebyshev: operator inv diagonal\" itself; remove it from the list.");
-            if (ifpack2Copy.isParameter("chebyshev: min diagonal value")) {
-                blockMinDiagonal_ = ifpack2Copy.get<SC>("chebyshev: min diagonal value");
+            // Ifpack2 deep-copies that vector in setParameters(): the diagonal is set (and setParameters called again)
+            // in compute(), once its values are there; here only the other parameters.
+            blockIfpack2Params_ = *ifpack2ParameterList;
+            blockIfpack2Params_.setName("Ifpack2");
+            FROSCH_ASSERT(!blockIfpack2Params_.isParameter("chebyshev: operator inv diagonal"),"FROSch::Ifpack2PreconditionerTpetra: BlockCrs computes \"chebyshev: operator inv diagonal\" itself; remove it from the list.");
+            if (blockIfpack2Params_.isParameter("chebyshev: min diagonal value")) {
+                blockMinDiagonal_ = blockIfpack2Params_.get<SC>("chebyshev: min diagonal value");
             }
-            ifpack2Copy.set("chebyshev: operator inv diagonal",rcp_implicit_cast<const TVector>(blockInvDiagonal_));
-            Ifpack2Preconditioner_->setParameters(ifpack2Copy);
+            Ifpack2Preconditioner_->setParameters(blockIfpack2Params_);
             return;
         }
 #ifdef HAVE_SHYLU_DDFROSCH_ZOLTAN2

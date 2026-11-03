@@ -153,6 +153,7 @@ namespace FROSch {
         RCP<TCrsGraph> blockGraph_ = null;
         RCP<TBlockCrsMatrix> blockMatrix_ = null;
         RCP<TVector> blockInvDiagonal_ = null;          // given to Chebyshev ("chebyshev: operator inv diagonal")
+        ParameterList blockIfpack2Params_;              // Ifpack2 list; set again in compute(): Ifpack2 deep-copies the diagonal in setParameters()
         SC blockMinDiagonal_ = ScalarTraits<SC>::eps();  // as Ifpack2 Chebyshev's "chebyshev: min diagonal value"
         HostLOView blockPerm_;                          // point row: old -> new
         HostLOView blockInvPerm_;                       // point row: new -> old
